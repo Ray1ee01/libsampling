@@ -524,7 +524,6 @@ class MultiClassBlueNoiseSampling(SamplingBase):
             for i in range(class_num):
                 fill_rate_curve.append([])
             while count < m and fail < failure_tolerance:
-
                 cate_sort = cate_fill_rate.argsort()
                 for this_cate in cate_sort:
                     if pos[this_cate] < data_by_category[this_cate][2]:
@@ -543,20 +542,20 @@ class MultiClassBlueNoiseSampling(SamplingBase):
                     cate_fill_rate[category[idx]] += 1 / this_cate_size
                     for i in range(cate_fill_rate.shape[0]):
                         fill_rate_curve[i].append(cate_fill_rate[i])
-                # elif flag[idx] and self._neighbors_removable(idx, selected_indexes, neighbors, category, constraint_matrix, cate_fill_rate):
-                #     count -= neighbors.shape[0]-1
-                #     for remove_idx in np.flip(np.sort(neighbors)):
-                #         remove_cate = category[selected_indexes[remove_idx]]
-                #         cate_fill_rate[remove_cate] -= 1 / data_by_category[remove_cate][2]
-                #         perm[remove_cate][perm_indexes[remove_idx]] , perm[remove_cate][pos[remove_cate]-1] = perm[remove_cate][pos[remove_cate]-1] , perm[remove_cate][perm_indexes[remove_idx]]
-                #         pos[remove_cate] -= 1
-                #         del selected_indexes[remove_idx]
-                #         del perm_indexes[remove_idx]
-                #     selected_indexes.append(idx)
-                #     perm_indexes.append(pos[this_cate]-1)
-                #     cate_fill_rate[category[idx]] += 1 / this_cate_size
-                #     for i in range(cate_fill_rate.shape[0]):
-                #         fill_rate_curve[i].append(cate_fill_rate[i])
+                elif flag[idx] and self._neighbors_removable(idx, selected_indexes, neighbors, category, constraint_matrix, cate_fill_rate):
+                    count -= neighbors.shape[0]-1
+                    for remove_idx in np.flip(np.sort(neighbors)):
+                        remove_cate = category[selected_indexes[remove_idx]]
+                        cate_fill_rate[remove_cate] -= 1 / data_by_category[remove_cate][2]
+                        perm[remove_cate][perm_indexes[remove_idx]] , perm[remove_cate][pos[remove_cate]-1] = perm[remove_cate][pos[remove_cate]-1] , perm[remove_cate][perm_indexes[remove_idx]]
+                        pos[remove_cate] -= 1
+                        del selected_indexes[remove_idx]
+                        del perm_indexes[remove_idx]
+                    selected_indexes.append(idx)
+                    perm_indexes.append(pos[this_cate]-1)
+                    cate_fill_rate[category[idx]] += 1 / this_cate_size
+                    for i in range(cate_fill_rate.shape[0]):
+                        fill_rate_curve[i].append(cate_fill_rate[i])
                 else:
                     fail += 1
                     flag[idx] = False
@@ -567,19 +566,8 @@ class MultiClassBlueNoiseSampling(SamplingBase):
         return np.array(selected_indexes)
     def _neighbors(self, idx, selected_idx, data, category, constraint_matrix):
         dist = cdist(np.array([data[idx]]), data[selected_idx]).reshape(-1)
-        if not self.adaptive:
-            mindist = constraint_matrix[category[idx]][category[selected_idx]]
-            return np.where(dist <= mindist) # watch out
-        else:
-            mean=np.ones((2,data.shape[1]))
-            mean[0][0]=0
-            mean[0][1]=0
-            mean[1][0]=1
-            mean[1][1]=1
-            # mean = np.zeros((data.shape[1],))
-            idx_r = self._adaptive_radius(idx, data, category, constraint_matrix, mean)
-            mindist = np.array([min(idx_r ,self._adaptive_radius(i,data,category,constraint_matrix,mean)) for i in selected_idx])
-            return np.where(dist <= mindist)
+        mindist = constraint_matrix[category[idx]][category[selected_idx]]
+        return np.where(dist <= mindist) # watch out
     def _conflict_check(self, neighbors_count):
         return neighbors_count==0
     def _neighbors_removable(self, idx, selected_idx, neighbors, category, constraint_matrix, cate_fill_rate):
@@ -590,8 +578,6 @@ class MultiClassBlueNoiseSampling(SamplingBase):
             if cate_fill_rate[category[neigh_idx]] < cate_fill_rate[category[idx]]:
                 return False
         return True
-    def _adaptive_radius(self, idx, data, category, constraint_matrix, mean=None):
-        return (np.exp(np.linalg.norm(data[idx]-mean[category[idx]])**2)**(1/data.shape[1]))*(1e-2)
     def _build_constraint_matrix(self, data_by_category, class_num):
         r_matrix = np.zeros((class_num, class_num))
         r_diag = np.zeros(class_num)
