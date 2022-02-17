@@ -14,7 +14,6 @@ import functools
 from sklearn import neighbors
 from utils.thread import FuncThread
 
-import matplotlib.pyplot as plt
 import faiss
 
 blue_noise_fail_rate = 0.5
@@ -437,21 +436,17 @@ class MultiClassBlueNoiseSamplingFAISS(SamplingBase):
         return
 
     def sample(self, data, category=None):
-        t1=time.perf_counter_ns()
         n, d = data.shape
         data = data.astype('float32')
         m = round(n * self.sampling_rate)
         w = 100 / self.sampling_rate
         selected_indexes = []
         count = 0
-        remove_time = 0
         # precomputed
         class_num = np.max(category) + 1
         candidates = []
         cate_start = [0]
         data_by_category = []
-        neigh_time = []
-        times = []
         for c in range(class_num):
             cate_idx = np.where(category == c)
             cate_data = data[cate_idx]
@@ -461,27 +456,14 @@ class MultiClassBlueNoiseSamplingFAISS(SamplingBase):
             cate_start.append(cate_start[-1]+cate_size)
         cate_fill_rate = np.zeros(class_num)
         constraint_matrix = self._build_constraint_matrix(data_by_category, class_num)
-        # mx = 0
-        # class_max = 0
-        # for i in range(class_num):
-        #     if constraint_matrix[i][i]>mx:
-        #         mx=constraint_matrix[i][i]
-        #         class_max=i
         max_pos = np.argmax(constraint_matrix)
         max_pos = [int(max_pos/class_num), max_pos%class_num]
         cate_count = [0] * class_num
         indexer = faiss.IndexFlatL2(d)
-        t2=time.perf_counter_ns()
-        print("precompute ",t2-t1)
-        import pandas as pd
         while count < m:
             flag = [True] * n
-            # failure_tolerance = min(50000, (n - m) * blue_noise_fail_rate)
-            failure_tolerance = (n - m) * blue_noise_fail_rate
+            failure_tolerance = min(5000, (n - m) * blue_noise_fail_rate)
             fail = 0
-            fill_rate_curve = []
-            for i in range(class_num):
-                fill_rate_curve.append([])
             while count < m:
                 cate_sort = cate_fill_rate.argsort()
                 for this_cate in cate_sort:
@@ -491,13 +473,7 @@ class MultiClassBlueNoiseSamplingFAISS(SamplingBase):
                 if cate_count[this_cate] == this_cate_size:
                     break
                 idx = candidates[this_cate].choose_random_item()
-                # print(this_cate)
-                # TODO
-                t3=time.perf_counter_ns()
-                neighbors = self._neighbors(idx, indexer, selected_indexes, data, category, constraint_matrix, max_pos, times)
-                t4=time.perf_counter_ns()
-                neigh_time.append(t4-t3)
-                # print("neighbor: ", t4-t3)
+                neighbors = self._neighbors(idx, indexer, selected_indexes, data, category, constraint_matrix, max_pos)
                 if flag[idx] and self._conflict_check(neighbors.shape[0]):
                     selected_indexes.append(idx)
                     indexer.add(data[idx:idx+1,:])
@@ -505,8 +481,6 @@ class MultiClassBlueNoiseSamplingFAISS(SamplingBase):
                     count += 1
                     cate_fill_rate[this_cate] += 1 / this_cate_size
                     cate_count[this_cate] += 1
-                    for i in range(cate_fill_rate.shape[0]):
-                        fill_rate_curve[i].append(cate_fill_rate[i])
                 elif self.remove and flag[idx] and self._neighbors_removable(idx, selected_indexes, neighbors, category, constraint_matrix, cate_fill_rate):
                     count -= neighbors.shape[0]-1
                     for remove_idx in np.flip(np.sort(neighbors)):
@@ -518,34 +492,16 @@ class MultiClassBlueNoiseSamplingFAISS(SamplingBase):
                     selected_indexes.append(idx)
                     indexer.add(data[idx:idx+1,:])
                     cate_fill_rate[category[idx]] += 1 / this_cate_size
-                    for i in range(cate_fill_rate.shape[0]):
-                        fill_rate_curve[i].append(cate_fill_rate[i])
                     remove_time += 1
                 else:
                     fail += 1
                     flag[idx] = False
-                # print(fail)
-            print(fail)
-            print(remove_time)
-            fig , ax = plt.subplots()
-            x = np.linspace(0,1,len(neigh_time))
-            ax.plot(x , neigh_time)
-            ax.plot(x , times)
-            plt.show()
-            # df = pd.DataFrame(neigh_time)
-            # df.to_csv('test3.csv', index=False, encoding='utf-8-sig')
-            # df1 = pd.DataFrame(times)
-            # df1.to_csv('test32.csv', index=False, encoding='utf-8-sig')
-            break
+            break # optional
             constraint_matrix /= 2
         selected_indexes = np.array(selected_indexes)
         return np.array(selected_indexes)
-    def _neighbors(self, idx, indexer, selected_idx, data, category, constraint_matrix, max_pos, times):
-        t1 = time.perf_counter_ns()
+    def _neighbors(self, idx, indexer, selected_idx, data, category, constraint_matrix, max_pos):
         lims, D ,I=indexer.range_search(data[idx:idx+1,:],constraint_matrix[max_pos[0]][max_pos[1]])
-        t2 = time.perf_counter_ns()
-        times.append(t2-t1)
-        # print(D)
         neigh_idx = np.empty((I.shape),dtype=int)
         for i in range(I.shape[0]):
             neigh_idx[i]=selected_idx[I[i]]
@@ -563,7 +519,6 @@ class MultiClassBlueNoiseSamplingFAISS(SamplingBase):
     def _build_constraint_matrix(self, data_by_category, class_num):
         r_matrix = np.zeros((class_num, class_num))
         r_diag = np.zeros(class_num)
-        t1=time.perf_counter_ns()
         for c, (cate_idx, cate_data, cate_size) in enumerate(data_by_category):
             k = int(1 / self.sampling_rate)
             if k + 1 > cate_size:
@@ -578,8 +533,6 @@ class MultiClassBlueNoiseSamplingFAISS(SamplingBase):
             radius *= self.all_weight
             r_matrix[c][c] = radius                
             r_diag[c] = r_matrix[c][c]
-        t2=time.perf_counter_ns()
-        print(t2-t1)
         p = np.argsort(-r_diag)
         C = []
         D = 0
@@ -591,150 +544,6 @@ class MultiClassBlueNoiseSamplingFAISS(SamplingBase):
                 if current_cate != j:
                     r_matrix[current_cate][j] = r_matrix[j][current_cate] = 1 / math.sqrt(D)
         return r_matrix
-    def _constraint_test(self, selected_idx, data, category, constraint_matrix):
-        for idx in selected_idx:
-            if self._neighbors(idx, selected_idx, data, category, constraint_matrix)[0].shape[0]>1: # idx is also in selected_idx
-                return False
-        return True
-
-class MultiClassBlueNoiseSampling(SamplingBase):
-    def __init__(self, sampling_rate, failure_tolerance=1000, class_weight={}, all_weight=1.0, adaptive=False):
-        super(MultiClassBlueNoiseSampling, self).__init__(sampling_rate)
-        self.failure_tolerance = failure_tolerance
-        self.class_weight = class_weight
-        self.all_weight = all_weight
-        self.adaptive = adaptive
-        return
-
-    def sample(self, data, category=None):
-        t1=time.perf_counter_ns()
-        n, d = data.shape
-        m = round(n * self.sampling_rate)
-        w = 100 / self.sampling_rate
-        selected_indexes = []
-        perm_indexes = []
-        count = 0
-        neigh_time = []
-        
-        # precomputed
-        class_num = np.max(category) + 1
-        data_by_category = []
-        for c in range(class_num):
-            cate_idx = np.where(category == c)
-            cate_data = data[cate_idx]
-            cate_size = cate_data.shape[0]
-            print(cate_size)
-            data_by_category.append((cate_idx, cate_data, cate_size))
-
-        cate_fill_rate = np.zeros(class_num)
-        constraint_matrix = self._build_constraint_matrix(data_by_category, class_num)
-        t2=time.perf_counter_ns()
-        print("precompute: ",t2-t1)
-        import pandas as pd
-        while count < m:
-            flag = [True] * n
-            failure_tolerance = min(50000, (n - m) * blue_noise_fail_rate)
-            fail = 0
-            perm = [cate_idx[0][np.random.permutation(cate_size)] for (cate_idx, _, cate_size) in data_by_category]
-            pos = [0] * class_num
-            fill_rate_curve = []
-            for i in range(class_num):
-                fill_rate_curve.append([])
-            while count < m and fail < failure_tolerance:
-                cate_sort = cate_fill_rate.argsort()
-                for this_cate in cate_sort:
-                    if pos[this_cate] < data_by_category[this_cate][2]:
-                        break                
-                this_cate_size = data_by_category[this_cate][2]
-                if pos[this_cate] == this_cate_size:
-                    break
-                idx = perm[this_cate][pos[this_cate]]
-                # print(this_cate)
-                pos[this_cate] += 1
-                t3=time.perf_counter_ns()
-                neighbors = self._neighbors(idx, selected_indexes, data, category, constraint_matrix)[0]
-                t4=time.perf_counter_ns()
-                neigh_time.append(t4-t3)
-                if flag[idx] and self._conflict_check(neighbors.shape[0]):
-                    selected_indexes.append(idx)
-                    perm_indexes.append(pos[this_cate]-1)
-                    count += 1
-                    cate_fill_rate[category[idx]] += 1 / this_cate_size
-                    for i in range(cate_fill_rate.shape[0]):
-                        fill_rate_curve[i].append(cate_fill_rate[i])
-                # elif flag[idx] and self._neighbors_removable(idx, selected_indexes, neighbors, category, constraint_matrix, cate_fill_rate):
-                #     count -= neighbors.shape[0]-1
-                #     for remove_idx in np.flip(np.sort(neighbors)):
-                #         remove_cate = category[selected_indexes[remove_idx]]
-                #         cate_fill_rate[remove_cate] -= 1 / data_by_category[remove_cate][2]
-                #         perm[remove_cate][perm_indexes[remove_idx]] , perm[remove_cate][pos[remove_cate]-1] = perm[remove_cate][pos[remove_cate]-1] , perm[remove_cate][perm_indexes[remove_idx]]
-                #         pos[remove_cate] -= 1
-                #         del selected_indexes[remove_idx]
-                #         del perm_indexes[remove_idx]
-                #     selected_indexes.append(idx)
-                #     perm_indexes.append(pos[this_cate]-1)
-                #     cate_fill_rate[category[idx]] += 1 / this_cate_size
-                #     for i in range(cate_fill_rate.shape[0]):
-                #         fill_rate_curve[i].append(cate_fill_rate[i])
-                else:
-                    fail += 1
-                    flag[idx] = False
-                # print(fail)
-            print(fail)
-            df = pd.DataFrame(neigh_time)
-            df.to_csv('test4.csv', index=False, encoding='utf-8-sig')
-            break
-            constraint_matrix /= 2
-        selected_indexes = np.array(selected_indexes)
-        return np.array(selected_indexes)
-    def _neighbors(self, idx, selected_idx, data, category, constraint_matrix):
-        dist = cdist(np.array([data[idx]]), data[selected_idx]).reshape(-1)
-        mindist = constraint_matrix[category[idx]][category[selected_idx]]
-        return np.where(dist <= mindist) # watch out
-    def _conflict_check(self, neighbors_count):
-        return neighbors_count==0
-    def _neighbors_removable(self, idx, selected_idx, neighbors, category, constraint_matrix, cate_fill_rate):
-        for neigh in neighbors:
-            neigh_idx = selected_idx[neigh]
-            if constraint_matrix[category[neigh_idx]][category[neigh_idx]] >= constraint_matrix[category[idx]][category[idx]]:
-                return False
-            if cate_fill_rate[category[neigh_idx]] < cate_fill_rate[category[idx]]:
-                return False
-        return True
-    def _build_constraint_matrix(self, data_by_category, class_num):
-        r_matrix = np.zeros((class_num, class_num))
-        r_diag = np.zeros(class_num)
-        t1 = time.perf_counter_ns()
-        for c, (cate_idx, cate_data, cate_size) in enumerate(data_by_category):
-            k = int(1 / self.sampling_rate)
-            if k + 1 > cate_size:
-                k = cate_size - 1
-            X = np.array(cate_data.tolist(), dtype=np.float64)
-            neighbor, dist = Knn(X, cate_size, 2, k + 1, 1, 1, cate_size)
-            radius = np.average(np.sqrt(dist[:, -1]))
-            if self.class_weight.get(f"{c}"):
-                radius *= self.class_weight.get(f"{c}")
-            radius *= self.all_weight
-            r_matrix[c][c] = radius                
-            r_diag[c] = r_matrix[c][c]
-        t2 = time.perf_counter_ns()
-        print(t2-t1)
-        p = np.argsort(-r_diag)
-        C = []
-        D = 0
-        for k in range(class_num):
-            current_cate = p[k]
-            C.append(current_cate)
-            D += 1 / (r_diag[current_cate] ** 2)
-            for j in C:
-                if current_cate != j:
-                    r_matrix[current_cate][j] = r_matrix[j][current_cate] = 1 / math.sqrt(D)
-        return r_matrix
-    def _constraint_test(self, selected_idx, data, category, constraint_matrix):
-        for idx in selected_idx:
-            if self._neighbors(idx, selected_idx, data, category, constraint_matrix)[0].shape[0]>1: # idx is also in selected_idx
-                return False
-        return True
 
 class OutlierBiasedRandomSampling(SamplingBase):
     def __init__(self, sampling_rate, outlier_score=None):
